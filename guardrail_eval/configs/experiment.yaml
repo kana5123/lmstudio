@@ -1,0 +1,75 @@
+# PromptGuard2 UNSAFE 예측의 정탐/오탐 검증기 — 실험 설정
+# 이 파일은 기록용이다. 각 스크립트는 여기 적힌 값을 기본값으로 갖고 있다.
+
+model:
+  base: meta-llama/Llama-Prompt-Guard-2-86M   # frozen, 절대 학습하지 않음
+  arch: DebertaV2ForSequenceClassification    # 런타임 확인값
+  hidden_size: 768
+  num_hidden_layers: 12
+  num_attention_heads: 12
+  # 실측으로 확인한 라벨 방향 (추측 아님)
+  label_map: {0: BENIGN, 1: MALICIOUS}
+  unsafe_id: 1
+  benign_id: 0
+  # 라벨 방향 실측 근거: 공격문 p1=0.9996 / 정상문 p1=0.0004 (2026-09-01)
+
+scoring:
+  # 기존 벤치마크 guards.py:SeqClassifierGuard.score 와 동일해야 비교가 성립한다
+  max_length: 512
+  stride: 128
+  window_aggregation: max      # 창별 UNSAFE 확률의 최댓값
+  unsafe_threshold: 0.5        # base_prediction 정의 (argmax 와 동치)
+
+data:
+  benchmark: JailbreaksOverTime
+  source_json: /home/kana5123/.cache/huggingface/hub/datasets--djapp18--JailbreaksOverTime/snapshots/a5a467cbab4b17d7f1c83e6cd119c61722053868/jailbreaksovertime_hugging_face.json
+  dedup: exact_prompt          # 22,180행
+  seed: 0
+  splits:
+    # 기존 rfpr.py:jailbreak_split() 을 그대로 재현해 보존 (sample_id 완전 일치 확인됨)
+    eval_val:  {n: 2000, role: 임계값 선택 전용}
+    eval_test: {n: 4000, role: 최종 보고 전용, 학습 금지}
+    # 위 6000건에 쓰이지 않은 16,180행에서만 검증기 데이터 생성
+    ver_train: {n: 12945, role: 검증기 학습 + 모든 통계 적합}
+    ver_dev:   {n: 3235,  role: 조기 종료/모델 선택}
+  verifier_label:
+    1: GT UNSAFE and PG2 UNSAFE   # TP
+    0: GT SAFE   and PG2 UNSAFE   # FP
+
+decompx:
+  config:
+    include_biases: true
+    bias_decomp_type: absdot
+    include_LN1: true
+    include_FFN: true
+    FFN_approx_type: GeLU_ZO
+    include_LN2: true
+    aggregation: vector          # 층간 전파에 필수
+    include_classifier_w_pooler: true
+    act_approx_type: ZO          # PG2 pooler 활성함수는 tanh 가 아니라 gelu
+    output_all_layers: true
+    output_classifier: true
+    ffn_chunk: 64                # 메모리 상한용 (수학적으로 동일)
+  dtype: float32                 # bf16/tf32 금지 — 복원 오차가 커진다
+  window: best_window            # PG2 가 최고점을 낸 창 하나에만 적용
+
+direction:
+  feature: delta_h = h_L - h_1
+  method: normalized centroid difference
+  fit_split: ver_train           # test 로 적합하는 것 금지
+  baselines: [raw, probe, lda]
+
+verifier:
+  optimizer: {name: AdamW, lr: 3.0e-4, weight_decay: 0.01}
+  batch_size: 32
+  epochs: 40
+  patience: 8
+  early_stop_metric: ver_dev AUROC
+  loss: BCEWithLogitsLoss
+  seeds: [0, 1, 2]               # 단일 체크포인트 비교는 잡음에 뒤집힌다
+
+evaluation:
+  targets_fpr: [0.01, 0.005, 0.001]
+  threshold_split: eval_val      # rfpr.py 와 동일 프로토콜
+  report_split: eval_test
+  baseline_reference: results/rfpr_jailbreak_promptguard_v2.json

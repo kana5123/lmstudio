@@ -9,3 +9,18 @@
 /scratchpads/
 /user-files/
 /.internal/
+
+# --- guardrail_eval: 재생성 가능한 산출물 (합계 257GB, GitHub 한도 초과) ---
+/guardrail_eval/artifacts/
+/guardrail_eval/models/
+/guardrail_eval/results/
+/guardrail_eval/third_party/
+/guardrail_eval/logs/
+
+# 어느 깊이든 제외
+__pycache__/
+*.pyc
+*.log
+.venv/
+.pytest_cache/
+.ipynb_checkpoints/

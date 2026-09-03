@@ -1,0 +1,620 @@
+\documentclass[10pt,twocolumn]{article}
+
+\usepackage[letterpaper,margin=0.75in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{microtype}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+
+\setlength{\columnsep}{0.24in}
+\setlength{\parindent}{1em}
+\setlength{\parskip}{0pt}
+\setlist{nosep,leftmargin=*}
+
+\newcommand{\method}{\textsc{BilingualAnchor}}
+\newcommand{\todo}[1]{\textcolor{red}{[TODO: #1]}}
+\newcommand{\dataset}{\textsc{Ko-JB}}
+
+\title{Guarding Korean without Korean Safety Labels:\\
+Middle-Layer Alignment for Cross-Lingual Jailbreak Detection}
+
+\author{Anonymous Authors \\
+Anonymous Institution \\
+\texttt{anonymous@example.com}}
+
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Input guard models are commonly trained with English safety data, but their
+decisions may transfer poorly to languages that are absent from task-specific
+supervision. We study Korean jailbreak detection under a constrained setting:
+English prompts and teacher predictions are available, together with a small
+set of English--Korean translation pairs, but no Korean safety labels are used
+for training. We introduce \method, which jointly distills the task decision
+of Llama Prompt Guard 2 into a multilingual DeBERTa encoder and contrastively
+aligns mean-pooled English and Korean representations at an intermediate
+layer. We evaluate on a parallel English--Korean benchmark of 2,485 test
+prompts, including 1,848 attacks from temporally held-out,
+in-the-wild, and synthetic adversarial sources. At a validation-calibrated 1\%
+false-positive-rate operating point, alignment at layer 8 raises Korean recall
+from 24.4\% to 33.2\% over a matched distillation baseline while leaving
+English recall essentially unchanged (33.5\% versus 33.4\%). The gain is
+largest on WildJailbreak (3.7\% to 14.2\%), and a paired McNemar test finds a
+significant difference ($p<10^{-34}$). Layer-wise ablations show a non-monotonic
+effect: shallow alignment hurts transfer, whereas middle-to-upper-layer
+alignment is consistently beneficial. These results suggest that unlabeled
+bilingual anchoring can improve target-language guard transfer, while also
+exposing substantial remaining challenges in strict low-FPR calibration and
+out-of-distribution recall.
+\end{abstract}
+
+\section{Introduction}
+
+Large language model (LLM) applications increasingly rely on input-side guard
+models to reject jailbreaks and prompt injections before a user request reaches
+the generator. Such guards must operate at low false-positive rates (FPRs): a
+detector that rejects a large fraction of benign traffic is difficult to deploy,
+even if its aggregate classification accuracy is high. Multilingual deployment
+adds a second requirement. A model trained primarily on English attack patterns
+must preserve its decision boundary when equivalent instructions are expressed
+in another language.
+
+Korean is a useful stress test for this transfer problem. It is typologically
+distant from English, uses a different writing system, and is not among the
+eight evaluation languages reported for Llama Prompt Guard 2
+\cite{meta2025promptguard2}. Collecting Korean safety annotations for every new
+attack distribution is expensive and slow, particularly because jailbreak
+prompts evolve over time \cite{piet2025jot}. We therefore ask:
+
+\begin{quote}
+Can an English-trained input guard acquire stronger Korean jailbreak detection
+without using Korean safety labels?
+\end{quote}
+
+We investigate this question by separating task transfer from language
+alignment. The task objective distills soft predictions from Llama Prompt Guard
+2 on 18,585 English prompts. A second objective takes 1,958 English--Korean
+translation pairs and makes corresponding representations similar at a chosen
+student layer. The alignment examples carry no task labels in the loss. This
+design aims to preserve an English teacher's attack knowledge while repairing
+the bilingual geometry of a multilingual encoder.
+
+Our experiments yield three main findings. First, the distillation-only student
+transfers unevenly: it detects most temporally held-out Korean JOT attacks but
+only 3.7\% of Korean WildJailbreak examples at the chosen operating point.
+Second, alignment at layer 8 improves overall Korean recall by 8.8 percentage
+points without a measurable loss in English recall relative to the matched
+baseline. Third, the effect depends strongly on depth: layer 4 alignment is
+harmful, layers 6--10 help, and layer 8 provides the best recall on our diverse
+main benchmark. The result supports intermediate representation alignment as a
+practical target-language adaptation mechanism, but the low absolute recall on
+the hardest source also cautions against interpreting cross-lingual improvement
+as solved robustness.
+
+Our contributions are:
+\begin{itemize}
+    \item an adaptation objective that combines English-only task distillation
+    with label-free English--Korean representation alignment for an encoder
+    guard model;
+    \item a source-diverse, exactly parallel English--Korean evaluation suite
+    with explicit low-FPR calibration; and
+    \item a layer- and source-level analysis showing where bilingual alignment
+    helps, where it hurts, and how representation retrieval changes after
+    training.
+\end{itemize}
+
+\paragraph{Terminology.}
+Our setting is \emph{zero Korean safety labels}, not zero-shot Korean: Korean
+translations are used by the alignment objective. We also use ``distillation''
+to mean teacher-to-student knowledge transfer, not model compression; the
+student checkpoint is larger than the 86M-parameter teacher.
+
+\section{Related Work}
+
+\subsection{Jailbreak detection and evaluation}
+
+In-the-wild jailbreaks use role play, instruction override, privilege
+escalation, and other social or structural devices to bypass model policies
+\cite{shen2023dan}. WildTeaming mines such tactics and composes them to create
+the large-scale WildJailbreak resource \cite{jiang2024wildteaming}.
+JailbreaksOverTime (JOT) shows that attack distributions drift and provides
+timestamped benign and attack prompts for temporal evaluation
+\cite{piet2025jot}. These findings motivate our use of both a temporal holdout
+and sources not used for task distillation.
+
+Prompt Guard 2 is a binary DeBERTa-family classifier for explicit jailbreak and
+prompt-injection patterns \cite{meta2025promptguard2}. Guard evaluation must
+also account for over-defense: benign prompts containing attack-adjacent words
+can be incorrectly rejected. NotInject was introduced specifically to measure
+this behavior \cite{li2025piguard}, and we include its translated benign prompts
+in calibration and testing.
+
+\subsection{Cross-lingual knowledge transfer}
+
+Knowledge distillation can transfer task predictions from a monolingual teacher
+to a multilingual student without target-language task labels.
+MONOX-KD applies this idea to cross-lingual classification
+\cite{chi2020monox}. Distillation alone, however, does not explicitly constrain
+the relation between parallel source- and target-language representations.
+
+Liu and Niehues \cite{liu2025middle} show that middle-layer representation
+alignment improves cross-lingual transfer in fine-tuned decoder-only LLMs. We
+adapt this principle to binary encoder-based guard classification. Our
+implementation differs in two respects: it jointly optimizes task and alignment
+losses rather than alternating between them, and it uses in-batch contrastive
+alignment of mean-pooled sentence representations. Accordingly, our novelty is
+the guard adaptation setting and its Korean low-FPR analysis, not the general
+idea of middle-layer alignment.
+
+\section{Problem Setting}
+
+Let $x^{en}$ be an English prompt and $y\in\{0,1\}$ indicate benign or
+malicious input. A frozen teacher $T$ provides a distribution
+$q_T(y\mid x^{en})$. The student $S_\theta$ is a multilingual encoder classifier.
+During training, we have an English task corpus
+$\mathcal{D}_{task}=\{x_i^{en}\}$ and a separate parallel corpus
+$\mathcal{D}_{par}=\{(a_j^{en},a_j^{ko})\}$. Safety labels associated with the
+parallel corpus are not consumed by the alignment loss.
+
+The goal is to improve Korean detection while retaining English behavior. At
+evaluation time, a threshold is selected only from a validation set of benign
+prompts to target a specified FPR and is then frozen for the test set.
+
+\section{Method}
+
+\subsection{English task distillation}
+
+For each English task prompt, we minimize cross-entropy against the teacher's
+soft distribution:
+\begin{equation}
+\mathcal{L}_{task}
+=-\frac{1}{B}\sum_{i=1}^{B}\sum_{c\in\{0,1\}}
+q_T(c\mid x_i^{en})\log p_\theta(c\mid x_i^{en}).
+\end{equation}
+No ground-truth task label is used in this objective. Both distributions use
+temperature 1.
+
+\subsection{Layer-specific bilingual alignment}
+
+Let $H_\theta^\ell(x)\in\mathbb{R}^{m\times d}$ be token representations at
+layer $\ell$. We mean-pool non-padding tokens and L2-normalize the result:
+\begin{equation}
+z_\ell(x)=\operatorname{norm}_2\left(
+\frac{\sum_t M_t H_{\theta,t}^\ell(x)}{\sum_t M_t}\right).
+\end{equation}
+For a minibatch of $B$ translation pairs, the one-directional in-batch
+contrastive loss is
+\begin{equation}
+\mathcal{L}_{align}^{\ell}
+=-\frac{1}{B}\sum_{i=1}^{B}\log
+\frac{\exp(z_\ell(a_i^{en})^\top z_\ell(a_i^{ko})/\tau)}
+{\sum_{j=1}^{B}\exp(z_\ell(a_i^{en})^\top z_\ell(a_j^{ko})/\tau)},
+\end{equation}
+where $\tau=0.05$. Other Korean sentences in the batch act as negatives.
+
+The final objective is
+\begin{equation}
+\mathcal{L}=\mathcal{L}_{task}+\lambda\mathcal{L}_{align}^{\ell},
+\qquad \lambda=1.
+\end{equation}
+We train variants with $\ell\in\{4,6,8,10\}$. The matched L0 baseline uses the
+same task pipeline but omits the parallel inputs and alignment loss.
+
+\section{Data}
+
+\subsection{Training data}
+
+The task corpus contains 18,585 unique English prompts from JOT between
+February and November 2023. It contains 3,265 attacks and 15,320 benign prompts,
+although these labels are retained only for corpus analysis and are not used by
+the distillation objective. Exact prompt overlap with the December 2023 split is
+removed before training.
+
+The alignment corpus contains 1,958 English--Korean machine-translated pairs
+drawn from the English training pool (346 attacks and 1,612 benign prompts by
+the unused reference labels). All English strings, Korean strings, and pair
+identifiers are unique, and we find no exact prompt overlap with the evaluation
+sets. Because the task corpus is larger, alignment pairs are traversed
+cyclically while iterating over task examples.
+
+\subsection{Evaluation data}
+
+Table~\ref{tab:data} summarizes the datasets in scope. The main \dataset{}
+test set is exactly parallel: each English prompt has a Korean translation with
+the same identifier and label. Both attack and benign classes are translated,
+reducing a trivial translation-style/class correlation. The 1,848 attacks
+combine temporal JOT attacks, prompts collected in the wild, and WildJailbreak.
+The 637 benign examples combine JOT and NotInject. The validation split contains
+300 benign prompts and is used only for threshold calibration.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lrrr}
+\toprule
+Split & Attack & Benign & Total \\
+\midrule
+JOT train (English) & 3,265 & 15,320 & 18,585 \\
+Alignment pairs & 346 & 1,612 & 1,958 \\
+\midrule
+\dataset{} validation & 0 & 300 & 300 \\
+\dataset{} test & 1,848 & 637 & 2,485 \\
+JOT-Dec parallel test & 286 & 682 & 968 \\
+\bottomrule
+\end{tabular}
+\caption{Data statistics. Reference labels in the alignment rows are not used
+by the alignment objective. All evaluation counts apply to each language.}
+\label{tab:data}
+\end{table}
+
+The attack composition of the main test set is 1,168 WildJailbreak examples,
+394 in-the-wild examples, and 286 JOT December examples. Benign examples contain
+467 JOT and 170 NotInject prompts.
+
+\paragraph{Translation status.}
+The December JOT translations have mean multilingual embedding similarity
+0.873 (median 0.886). Automated screening flags 41 broader benchmark examples
+for manual review. \todo{Complete the 41-item intent-preservation review,
+rebuild the benchmark, and update all numbers before submission. Specify the
+translation model/API, version, decoding settings, and human-review protocol.}
+
+\section{Experimental Setup}
+
+We initialize the student from \texttt{microsoft/mdeberta-v3-base}, a 12-layer
+multilingual DeBERTa V3 encoder \cite{he2021debertav3}, and the classifier head
+for two labels. The teacher is
+\texttt{meta-llama/Llama-Prompt-Guard-2-86M}. The student has approximately 279M
+parameters due largely to its 250K multilingual vocabulary; its saved weights
+occupy 1.1GB.
+
+All current models are trained for three epochs with learning rate
+$2\times10^{-5}$, batch size 16, 10\% warmup, weight decay 0.01, FP16, maximum
+sequence length 512, and seed 0. Training uses no validation-based checkpoint
+selection. \todo{Repeat L0 and L8 with at least three, preferably five, seeds and
+report mean, standard deviation, and per-seed operating points.}
+
+For each model and language, we score maliciousness as $1-p_\theta(y=0\mid x)$.
+We sort benign validation scores and select the lowest threshold whose empirical
+validation FPR does not exceed the target $\alpha=0.01$. The threshold is then
+applied unchanged to the test set. We report both recall and the achieved test
+FPR. We use an exact two-sided McNemar test on paired attack decisions for
+significance. Because all current trained results use one seed, this test
+captures evaluation-item uncertainty but not training variance.
+
+\section{Results}
+
+\subsection{Main bilingual evaluation}
+
+Table~\ref{tab:main} reports the main result. L8 reaches 33.2\% Korean recall,
+compared with 24.4\% for the matched L0 baseline, an 8.8-point absolute and
+36.1\% relative improvement. English recall is effectively unchanged
+(33.4\% versus 33.5\%). Thus the improvement is not obtained by exchanging
+English detection for Korean detection.
+
+\begin{table*}[t]
+\centering
+\small
+\begin{tabular}{lrrrrr}
+\toprule
+Model & Align layer & English recall & English test FPR & Korean recall & Korean test FPR \\
+\midrule
+Legacy MONOX-KD & -- & 35.7 & 1.10 & 24.3 & 2.35 \\
+Matched KD (L0) & -- & 33.5 & 1.73 & 24.4 & 1.41 \\
+\method{} & 4 & 28.1 & 2.04 & 20.1 & 0.78 \\
+\method{} & 6 & 35.5 & 2.04 & 30.2 & 1.41 \\
+\method{} & 8 & 33.4 & 1.41 & \textbf{33.2} & 1.57 \\
+\method{} & 10 & 34.8 & 2.67 & 32.5 & 1.88 \\
+Prompt Guard 2 teacher & -- & \textbf{47.6} & 1.73 & 27.1 & 0.78 \\
+\bottomrule
+\end{tabular}
+\caption{Recall and achieved test FPR (\%) on the main parallel \dataset{} test
+set. Thresholds are chosen independently for each language and model using a
+1\% target FPR on its validation split. These are validation-calibrated
+operating points; achieved test FPR need not equal 1\%.}
+\label{tab:main}
+\end{table*}
+
+The teacher remains substantially stronger in English, exceeding L8 by 14.2
+points. L8 exceeds the teacher's Korean recall by 6.1 points, but this is not a
+strict equal-FPR comparison because the achieved Korean test FPR is 1.57\% for
+L8 and 0.78\% for the teacher. We therefore use the matched L0 comparison as our
+primary causal evidence for alignment.
+
+The paired comparison further supports the main effect. Among 1,848 Korean
+attacks, 181 are missed by L0 but detected by L8, while 18 show the reverse
+pattern. The resulting exact McNemar $p$-value is $4.68\times 10^{-35}$.
+Layer 6 and layer 10 also significantly improve over L0, whereas layer 4
+significantly degrades performance. \todo{After multi-seed training, supplement
+paired item tests with uncertainty over seeds and correct for multiple layer
+comparisons.}
+
+\subsection{Where does alignment help?}
+
+Table~\ref{tab:source} decomposes Korean attack recall by source. The largest
+absolute gain occurs on WildJailbreak: L8 improves from 3.7\% to 14.2\%. JOT is
+the easiest source for all models, likely because it shares the data-generating
+family of the distillation corpus despite the temporal split. In-the-wild
+prompts occupy the middle. The source decomposition shows that the aggregate
+gain is not solely driven by the temporally held-out JOT subset.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lrrr}
+\toprule
+Source & L0 & L8 & $\Delta$ \\
+\midrule
+JOT Dec. & 82.2 & 89.9 & +7.7 \\
+In-the-wild & 44.2 & 48.5 & +4.3 \\
+WildJailbreak & 3.7 & 14.2 & +10.5 \\
+\bottomrule
+\end{tabular}
+\caption{Korean attack recall (\%) by source at each model's
+validation-calibrated 1\% target-FPR operating point.}
+\label{tab:source}
+\end{table}
+
+The absolute WildJailbreak recall remains low even after alignment. Our method
+should therefore be understood as improving cross-lingual transfer under source
+shift, not as solving out-of-distribution jailbreak detection.
+
+\section{Analysis}
+
+\subsection{Layer choice is non-monotonic}
+
+Alignment is not uniformly helpful. L4 reduces Korean recall by 4.3 points,
+whereas L6, L8, and L10 improve it by 5.8, 8.8, and 8.1 points, respectively.
+This pattern is consistent with the hypothesis that shallow representations
+must retain language- and form-specific information, while intermediate
+representations offer a better interface for aligning task-relevant semantics.
+The slight decline from L8 to L10 suggests that constraining representations
+closer to the classifier is not always optimal.
+
+\subsection{Parallel retrieval}
+
+We evaluate representation alignment without safety labels by retrieving the
+English counterpart of each Korean sentence among 600 candidates. Table
+\ref{tab:retrieval} reports top-1 accuracy at student layers 8 and 12. Training
+at L8 gives the highest layer-8 retrieval accuracy, improving it from 57.8\% to
+71.7\%. Training at L10 produces the highest final-layer retrieval but lower
+main-benchmark recall than L8. Thus stronger alignment everywhere is not
+sufficient; where bilingual geometry is imposed matters for downstream
+transfer.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lrr}
+\toprule
+Training variant & Retrieval at L8 & Retrieval at L12 \\
+\midrule
+L0 & 57.8 & 9.3 \\
+L4 & 55.8 & 8.3 \\
+L6 & 61.7 & 14.5 \\
+L8 & \textbf{71.7} & 22.5 \\
+L10 & 67.0 & \textbf{43.5} \\
+\bottomrule
+\end{tabular}
+\caption{English--Korean top-1 parallel retrieval accuracy (\%) among 600
+candidates, measured at two representation layers.}
+\label{tab:retrieval}
+\end{table}
+
+\subsection{Calibration at low FPR}
+
+The validation-calibrated target does not guarantee the same test FPR under
+distribution shift. For example, L8 targets 1\% but reaches 1.57\% on Korean
+test data. More fundamentally, 300 benign validation examples provide only
+three-error resolution at 1\% FPR. A 0.1\% target would allow zero errors and is
+not statistically resolvable with this validation size. We consequently avoid
+using 0.1\% as a headline metric and report achieved FPR beside recall.
+
+\todo{Before submission, enlarge the benign calibration set; store per-example
+scores; report bootstrap confidence intervals, ROC curves, and partial AUC in
+the low-FPR region; and verify numerical stability around tied saturated
+scores.}
+
+\section{Limitations}
+
+\paragraph{Single language pair.}
+We study English-to-Korean transfer only. The result does not establish that
+the same layer is optimal for other languages or scripts.
+
+\paragraph{Machine translation.}
+Alignment and evaluation data depend on machine translation. Automated semantic
+similarity cannot guarantee that attack intent, ambiguity, or culturally
+specific wording is preserved. The current draft precedes completion of a
+41-item flagged translation review. All final results must be recomputed after
+that audit.
+
+\paragraph{Layer selection.}
+Layer 8 is best on the main benchmark, whereas layer 10 is slightly stronger on
+the JOT-only parallel evaluation under the current calibration. Unless an
+independent, pre-specified layer selection rule is documented, L8 should be
+reported as the best observed layer in a sweep rather than an a priori selected
+architecture.
+
+\paragraph{Calibration sample size.}
+The benign validation split is too small for precise estimation below 1\% FPR.
+Differences between validation-targeted and achieved test FPR complicate direct
+comparison between independently calibrated models.
+
+\paragraph{Training variance and controls.}
+Current results use one seed. We have not yet evaluated shuffled translation
+pairs, Korean pseudo-label distillation, or translate-test baselines. Such
+controls are needed to distinguish semantic alignment from additional
+regularization and compute.
+
+\paragraph{Scope.}
+The method is evaluated as a jailbreak detector. Preliminary evaluation on the
+PIArena indirect prompt-injection task yields near-zero recall for the aligned
+models, indicating a task mismatch. We do not claim general prompt-injection or
+agent-security robustness.
+
+\paragraph{Efficiency.}
+The student is larger than the teacher and alignment adds two encoder forward
+passes during training. This work addresses target-language transfer rather
+than compression or inference efficiency.
+
+\section{Ethical Considerations}
+
+The benchmark contains prompts requesting harmful, illegal, hateful, or abusive
+content. Annotators should be informed of this material and provided with the
+ability to stop review. Released data should preserve source licenses and avoid
+including personally identifying information. Because the classifier can both
+miss attacks and reject legitimate requests, it should be deployed as one layer
+of a defense-in-depth system rather than as a sole safety mechanism. Reporting
+source-level failures and achieved false-positive rates is important to avoid a
+misleading impression of protection.
+
+\section{Reproducibility Status}
+
+The training code fixes the seed, model identifiers, maximum length, loss
+weights, temperature, and optimizer hyperparameters. The temporal JOT split and
+exact-overlap removal are scripted. The current repository also stores final
+model checkpoints and paired hit vectors.
+
+The following artifacts remain necessary for a reproducible release:
+\begin{itemize}
+    \item a deterministic script that builds \dataset{} and documents the
+    exclusion of 46 translated source prompts;
+    \item reviewed and versioned translation files with provenance and licenses;
+    \item per-example validation and test scores, thresholds, and achieved FPRs;
+    \item multi-seed checkpoints and aggregate statistics; and
+    \item exact-benchmark outputs for external multilingual guard baselines.
+\end{itemize}
+
+\section{Conclusion}
+
+We presented \method, a simple combination of English teacher distillation and
+label-free bilingual representation alignment for Korean jailbreak detection.
+The best observed intermediate-layer variant improves Korean recall by 8.8
+points over matched distillation while preserving English recall, with the
+largest gain on attacks outside the task-distillation source. The non-monotonic
+layer effect and retrieval analysis indicate that cross-lingual guard transfer
+depends not only on whether representations are aligned but also on where the
+constraint is applied. At the same time, low absolute recall on WildJailbreak
+and calibration uncertainty at strict FPRs show that bilingual alignment is a
+useful adaptation tool rather than a complete defense.
+
+\section*{Acknowledgments}
+
+\todo{Add funding, compute, translation-review, and institutional acknowledgments.}
+
+\begin{thebibliography}{99}
+
+\bibitem[Chi et~al.(2020)Chi, Dong, Wei, Mao, and Huang]{chi2020monox}
+Zewen Chi, Li Dong, Furu Wei, Xianling Mao, and Heyan Huang. 2020.
+\newblock Can monolingual pretrained models help cross-lingual classification?
+\newblock In \emph{Proceedings of AACL-IJCNLP}, pages 12--17.
+
+\bibitem[He et~al.(2023)He, Gao, and Chen]{he2021debertav3}
+Pengcheng He, Jianfeng Gao, and Weizhu Chen. 2023.
+\newblock DeBERTaV3: Improving DeBERTa using ELECTRA-style pre-training with
+gradient-disentangled embedding sharing.
+\newblock In \emph{Proceedings of ICLR}.
+
+\bibitem[Jiang et~al.(2024)Jiang, Rao, Han, Ettinger, Brahman, Kumar,
+Mireshghallah, Lu, Sap, Choi, and Dziri]{jiang2024wildteaming}
+Liwei Jiang, Kavel Rao, Seungju Han, Allyson Ettinger, Faeze Brahman,
+Sachin Kumar, Niloofar Mireshghallah, Ximing Lu, Maarten Sap, Yejin Choi,
+and Nouha Dziri. 2024.
+\newblock WildTeaming at scale: From in-the-wild jailbreaks to
+(adversarially) safer language models.
+\newblock In \emph{Advances in Neural Information Processing Systems}.
+
+\bibitem[Li et~al.(2025)Li, Liu, Zhang, and Xiao]{li2025piguard}
+Hao Li, Xiaogeng Liu, Ning Zhang, and Chaowei Xiao. 2025.
+\newblock PIGuard: Prompt injection guardrail via mitigating overdefense for free.
+\newblock In \emph{Proceedings of ACL}, pages 30420--30437.
+
+\bibitem[Liu and Niehues(2025)]{liu2025middle}
+Danni Liu and Jan Niehues. 2025.
+\newblock Middle-layer representation alignment for cross-lingual transfer in
+fine-tuned LLMs.
+\newblock In \emph{Proceedings of ACL}, pages 15979--15996.
+
+\bibitem[Meta(2025)]{meta2025promptguard2}
+Meta. 2025.
+\newblock Llama Prompt Guard 2 model card.
+\newblock \url{https://huggingface.co/meta-llama/Llama-Prompt-Guard-2-86M}.
+
+\bibitem[van~den Oord et~al.(2018)van~den Oord, Li, and Vinyals]{oord2018cpc}
+Aaron van~den Oord, Yazhe Li, and Oriol Vinyals. 2018.
+\newblock Representation learning with contrastive predictive coding.
+\newblock \emph{arXiv preprint arXiv:1807.03748}.
+
+\bibitem[Piet et~al.(2025)Piet, Huang, Jacob, Chow, Alrashed, Zhao, Hu,
+Sitawarin, Alomair, and Wagner]{piet2025jot}
+Julien Piet, Xiao Huang, Dennis Jacob, Annabella Chow, Maha Alrashed,
+Geng Zhao, Zhanhao Hu, Chawin Sitawarin, Basel Alomair, and David Wagner. 2025.
+\newblock JailbreaksOverTime: Detecting jailbreak attacks under distribution
+shift.
+\newblock In \emph{Proceedings of the ACM Workshop on Artificial Intelligence
+and Security}.
+
+\bibitem[Shen et~al.(2023)Shen, Chen, Backes, Shen, and Zhang]{shen2023dan}
+Xinyue Shen, Zeyuan Chen, Michael Backes, Yun Shen, and Yang Zhang. 2023.
+\newblock ``Do Anything Now'': Characterizing and evaluating in-the-wild
+jailbreak prompts on large language models.
+\newblock \emph{arXiv preprint arXiv:2308.03825}.
+
+\end{thebibliography}
+
+\appendix
+
+\section{Implementation Details}
+
+Teacher scores are computed once over English task prompts and stored in memory
+for training. The student receives one task batch and, for aligned variants,
+two additional forward passes for the English and Korean members of a parallel
+batch. Padding tokens are excluded from mean pooling. The alignment target is
+the diagonal of the $B\times B$ similarity matrix. Models are saved only after
+the third epoch; there is no best-checkpoint selection despite the checkpoint
+directory name \texttt{best}.
+
+\section{Additional Statistical Results}
+
+Using the stored paired Korean attack decisions, the exact McNemar comparisons
+against L0 are shown in Table~\ref{tab:mcnemar}. ``Gain'' counts attacks missed
+by L0 and detected by the aligned model; ``loss'' is the reverse.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lrrr}
+\toprule
+Variant & Gain & Loss & $p$ \\
+\midrule
+L4 & 27 & 107 & $1.82\times10^{-12}$ \\
+L6 & 134 & 26 & $9.92\times10^{-19}$ \\
+L8 & 181 & 18 & $4.68\times10^{-35}$ \\
+L10 & 178 & 28 & $6.78\times10^{-28}$ \\
+\bottomrule
+\end{tabular}
+\caption{Exact paired McNemar tests on 1,848 Korean attacks. These tests do not
+include training-seed uncertainty.}
+\label{tab:mcnemar}
+\end{table}
+
+\section{Planned Controls}
+
+The camera-ready experimental matrix should add the following controls while
+keeping the main test set frozen:
+\begin{enumerate}
+    \item Korean-to-English translate-test followed by the frozen teacher;
+    \item pseudo-label KD on the same 1,958 Korean translations;
+    \item alignment with randomly permuted English--Korean pairs;
+    \item a matched-compute regularization control; and
+    \item external multilingual guards evaluated on the exact same examples.
+\end{enumerate}
+
+\end{document}

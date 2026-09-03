@@ -1,0 +1,593 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <title>PII Proxy 모니터링</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+
+<header class="top">
+  <div class="brand-block">
+    <div class="logo"><span class="glyph">P</span> PII Proxy</div>
+    <nav>
+      <a href="/" class="active">실시간</a>
+      <a href="/logs">로그 저장소</a>
+    </nav>
+  </div>
+  <div class="right">
+    <span class="meter" id="case-count">요청 0건</span>
+    <span class="live-status" id="status"><span class="dot"></span><span id="status-text">연결 중</span></span>
+  </div>
+</header>
+
+<main class="console">
+
+  <!-- ── KPI 스트립 (RED + USE) ─────────────────────────────────────── -->
+  <div class="kpi-strip">
+    <div class="kpi"><div class="lbl">요청 수</div><div class="num" id="kpi-total">0</div><div class="delta" id="kpi-total-d">누적</div></div>
+    <div class="kpi"><div class="lbl">통과</div><div class="num" id="kpi-success">0</div><div class="delta up" id="kpi-success-d">200 OK</div></div>
+    <div class="kpi"><div class="lbl">차단</div><div class="num" id="kpi-blocked">0</div><div class="delta down" id="kpi-blocked-d">403</div></div>
+    <div class="kpi"><div class="lbl">평균 처리 시간</div><div class="num" id="kpi-avg">—<small>ms</small></div><div class="delta" id="kpi-avg-d">전체 평균</div></div>
+    <div class="kpi"><div class="lbl">PII 탐지</div><div class="num" id="kpi-entities">0</div><div class="delta" id="kpi-entities-d">누적 항목</div></div>
+    <div class="kpi"><div class="lbl">진행 중</div><div class="num" id="kpi-active">0</div><div class="delta" id="kpi-active-d">running</div></div>
+  </div>
+
+  <!-- ── 9-단계 station 바 ─────────────────────────────────────────── -->
+  <div class="pipeline-bar">
+    <div class="pipeline-bar-head">
+      <h3>9단계 처리 흐름</h3>
+      <span class="acc" id="flow-trace">— · 요청을 선택하세요</span>
+    </div>
+    <div class="stations" id="stations"></div>
+  </div>
+
+  <!-- ── 메인 영역 ─────────────────────────────────────────────────── -->
+  <div class="main-area">
+
+    <aside class="col">
+      <div class="panel cases">
+        <div class="panel-head"><h3>최근 요청</h3><span class="acc">실시간</span></div>
+        <div class="panel-body" id="cases-body">
+          <div class="empty-state">요청 대기 중</div>
+        </div>
+      </div>
+    </aside>
+
+    <section class="col">
+      <div class="panel detail" style="flex:1;min-height:0;">
+        <div class="panel-head">
+          <h3>단계 상세</h3>
+          <span class="acc" id="detail-acc">위 단계를 클릭하세요</span>
+        </div>
+        <div class="panel-body" id="detail-body">
+          <div class="welcome">
+            <div class="glyph">∅</div>
+            <p>좌측에서 요청을 선택하면 자동으로 마지막 완료 단계가 열립니다.</p>
+            <p>위의 9단계 station을 클릭하면 그 단계의 <strong>입력 → 출력</strong>을 볼 수 있습니다.</p>
+            <p style="margin-top:8px;"><code>POST :8765/api/chat</code> 으로 새 요청을 보내 시작하세요.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <aside class="col">
+      <div class="panel">
+        <div class="panel-head"><h3>오늘 통계</h3></div>
+        <div class="panel-body">
+          <div class="stat-list">
+            <div class="row"><span class="lbl">총 요청</span><span class="num" id="rt-total">0</span></div>
+            <div class="row"><span class="lbl">통과</span><span class="num" id="rt-success">0</span></div>
+            <div class="row"><span class="lbl">차단</span><span class="num" id="rt-blocked">0</span></div>
+            <div class="row"><span class="lbl">평균 시간</span><span class="num" id="rt-avg">—</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel" style="flex:1;min-height:0;">
+        <div class="panel-head"><h3>단계별 평균 시간</h3><span class="acc">ms</span></div>
+        <div class="panel-body">
+          <div class="lat-grid" id="lat-grid"></div>
+        </div>
+      </div>
+
+      <div class="panel" style="flex:1;min-height:0;">
+        <div class="panel-head"><h3>자주 탐지된 PII</h3></div>
+        <div class="panel-body">
+          <div class="entity-bars" id="entity-bars">
+            <div class="empty-state">데이터 없음</div>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+  </div>
+
+  <!-- ── 라이브 피드 ───────────────────────────────────────────────── -->
+  <div class="panel live-feed">
+    <div class="panel-head"><h3>실시간 이벤트</h3><span class="acc" id="feed-count">0</span></div>
+    <div class="panel-body">
+      <table class="feed-table">
+        <thead>
+          <tr><th>시각</th><th>요청</th><th>단계</th><th>상태</th><th class="ms-cell">시간</th></tr>
+        </thead>
+        <tbody id="feed-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+</main>
+
+<!-- 단계 아이콘 정의 -->
+<svg width="0" height="0" style="position:absolute;">
+  <defs>
+    <symbol id="ic-1" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" d="M4 7h16M4 12h16M4 17h10M16 14l4 3-4 3"/></symbol>
+    <symbol id="ic-2" viewBox="0 0 24 24"><circle fill="none" stroke="currentColor" stroke-width="1.6" cx="11" cy="11" r="6.5"/><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" d="M20 20l-4-4"/></symbol>
+    <symbol id="ic-3" viewBox="0 0 24 24"><rect fill="currentColor" x="3" y="6" width="11" height="2.4" rx="0.4"/><rect fill="currentColor" x="3" y="10.8" width="15" height="2.4" rx="0.4"/><rect fill="currentColor" x="3" y="15.6" width="9" height="2.4" rx="0.4"/></symbol>
+    <symbol id="ic-4" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" d="M12 3l8 4v5.5c0 4.5-3.2 7.7-8 9-4.8-1.3-8-4.5-8-9V7l8-4z"/><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" d="M12 8v5"/><circle fill="currentColor" cx="12" cy="16" r="0.9"/></symbol>
+    <symbol id="ic-5" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" d="M5 13l4 4L19 7"/></symbol>
+    <symbol id="ic-6" viewBox="0 0 24 24"><rect fill="none" stroke="currentColor" stroke-width="1.6" x="6" y="6" width="12" height="12" rx="1.5"/><rect fill="none" stroke="currentColor" stroke-width="1.6" x="9.5" y="9.5" width="5" height="5"/><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></symbol>
+    <symbol id="ic-7" viewBox="0 0 24 24"><circle fill="none" stroke="currentColor" stroke-width="1.6" cx="11" cy="11" r="6.5"/><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" d="M20 20l-4-4M8 11l2 2 4-4"/></symbol>
+    <symbol id="ic-8" viewBox="0 0 24 24"><circle fill="none" stroke="currentColor" stroke-width="1.6" cx="8" cy="14" r="3.2"/><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" d="M11.2 14H21M19 14v3M16 14v2"/></symbol>
+    <symbol id="ic-9" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" d="M5 12h14M13 6l6 6-6 6"/></symbol>
+  </defs>
+</svg>
+
+<script>
+const STAGES = [
+  { idx:1, name:"입력 파싱",   slug:"input.parse" },
+  { idx:2, name:"PII 탐지",    slug:"presidio.analyze" },
+  { idx:3, name:"PII 익명화",  slug:"presidio.anonymize" },
+  { idx:4, name:"위협 탐지",   slug:"injection.detect" },
+  { idx:5, name:"정책 결정",   slug:"policy.gate" },
+  { idx:6, name:"LLM 호출",    slug:"llm.call" },
+  { idx:7, name:"출력 검사",   slug:"output.scan" },
+  { idx:8, name:"PII 복원",    slug:"deanonymize" },
+  { idx:9, name:"응답 조립",   slug:"response.assemble" },
+];
+const STATUS_KO = { success:"통과", blocked:"차단", running:"진행", pending:"대기", failed:"실패", started:"시작", completed:"완료" };
+
+const traces = new Map();
+let selectedTrace = null;
+let selectedStage = null;
+let entitiesTotal = 0;
+const liveFeed = [];
+
+const $ = id => document.getElementById(id);
+const stationsEl = $("stations");
+const detailEl   = $("detail-body");
+const detailAcc  = $("detail-acc");
+const flowAcc    = $("flow-trace");
+const casesEl    = $("cases-body");
+const caseCount  = $("case-count");
+const statusEl   = $("status");
+const statusTxt  = $("status-text");
+const feedBody   = $("feed-body");
+
+renderStations(null);
+
+function ingest(ev) {
+  const traceId = (ev.subject || "trace/unknown").split("/").slice(-1)[0];
+  let t = traces.get(traceId);
+  if (!t) {
+    t = { id: traceId, events: [], byIdx: new Map(), firstTime: ev.time, status: "pending" };
+    traces.set(traceId, t);
+  }
+  t.events.push(ev);
+  const idx = ev.data?.stage_index;
+  if (idx >= 1 && idx <= 9) t.byIdx.set(idx, ev);
+
+  if (ev.data?.stage === "request.received") t.model = ev.data.model;
+  if (ev.data?.stage === "request.completed") {
+    t.status = ev.data.status === "blocked" ? "blocked" : "success";
+    t.durationMs = ev.data.duration_ms;
+    t.model = ev.data.model || t.model;
+  } else if (t.status === "pending" && t.byIdx.size > 0) {
+    t.status = "running";
+  }
+
+  if (ev.data?.stage === "presidio.analyze") {
+    entitiesTotal += (ev.data.entities_count || ev.data.entities?.length || 0);
+    $("kpi-entities").textContent = entitiesTotal;
+  }
+
+  pushFeed(ev, traceId);
+
+  if (traces.size > 200) traces.delete(traces.keys().next().value);
+  if (!selectedTrace) selectCase(traceId);
+  renderCases();
+  if (selectedTrace === traceId) {
+    renderStations(t);
+    if (selectedStage) renderDetail(t, selectedStage);
+  }
+  refreshActive();
+}
+
+function refreshActive() {
+  let active = 0;
+  for (const t of traces.values()) if (t.status === "running") active++;
+  $("kpi-active").textContent = active;
+}
+
+// ─── 최근 요청 ─────────────────────────────────────────────────────
+function renderCases() {
+  caseCount.textContent = `요청 ${traces.size}건`;
+  if (traces.size === 0) {
+    casesEl.innerHTML = '<div class="empty-state">요청 대기 중</div>';
+    return;
+  }
+  casesEl.innerHTML = [...traces.entries()].reverse().map(([id, t]) => {
+    const cls  = id === selectedTrace ? "case-row selected" : "case-row";
+    const stat = t.status === "blocked" ? "blocked" : t.status === "success" ? "success" : "pending";
+    const dur  = t.durationMs != null ? `${t.durationMs.toFixed(0)}ms` : "진행중";
+    return `<div class="${cls}" onclick="selectCase('${id}')">
+      <div>
+        <div class="case-id">${esc(id.slice(0, 12))}</div>
+        <div class="case-meta">${dur} · ${esc(t.model || "—")}</div>
+      </div>
+      <span class="case-pill ${stat}">${STATUS_KO[stat] || stat}</span>
+    </div>`;
+  }).join("");
+}
+
+function selectCase(id) {
+  selectedTrace = id;
+  selectedStage = null;
+  const t = traces.get(id);
+  renderCases();
+  renderStations(t);
+  if (t) {
+    const idxs = [...t.byIdx.keys()].sort((a,b) => a - b);
+    if (idxs.length) {
+      selectedStage = idxs[idxs.length - 1];
+      renderStations(t);
+      renderDetail(t, selectedStage);
+    } else {
+      detailEl.innerHTML = `<div class="welcome"><div class="glyph">∅</div><p>요청 데이터 수신 중…</p></div>`;
+      detailAcc.textContent = "—";
+    }
+  }
+}
+
+// ─── 9단계 station 바 ─────────────────────────────────────────────
+function renderStations(t) {
+  flowAcc.textContent = t ? `${t.id.slice(0, 16)}… · ${t.model || "—"}` : "— · 요청을 선택하세요";
+  const completedIdxs = t ? [...t.byIdx.keys()] : [];
+  const maxDone = completedIdxs.length ? Math.max(...completedIdxs) : 0;
+  stationsEl.innerHTML = STAGES.map(s => {
+    const ev = t?.byIdx.get(s.idx);
+    let cls = "station";
+    let dur = "—";
+    if (ev) {
+      const status = ev.data?.status || "completed";
+      if (status === "blocked") cls += " blocked";
+      else cls += " completed";
+      const ms = ev.data?.duration_ms;
+      if (ms != null) dur = `${ms.toFixed(0)}ms`;
+    } else if (t && t.status === "running" && s.idx === maxDone + 1) {
+      cls += " running";
+    }
+    if (s.idx === selectedStage) cls += " selected";
+    return `<div class="${cls}" onclick="selectStage(${s.idx})">
+      <div class="num">${s.idx}</div>
+      <div class="icon"><svg><use href="#ic-${s.idx}"/></svg></div>
+      <div class="name">${s.name}</div>
+      <div class="ms">${dur}</div>
+    </div>`;
+  }).join("");
+}
+
+function selectStage(idx) {
+  selectedStage = idx;
+  const t = traces.get(selectedTrace);
+  renderStations(t);
+  if (t) renderDetail(t, idx);
+}
+
+// ─── 단계 상세 (입력 → 출력 only, no middle step) ────────────────
+function renderDetail(t, idx) {
+  const def = STAGES.find(s => s.idx === idx);
+  const ev = t?.byIdx.get(idx);
+  detailAcc.textContent = ev ? `${def.name} · ${(ev.data?.duration_ms || 0).toFixed(1)}ms` : `${def.name} · 대기`;
+  if (!ev) {
+    detailEl.innerHTML = head(def, null) +
+      `<div class="empty-state" style="padding:40px;">아직 실행되지 않은 단계입니다.</div>`;
+    return;
+  }
+  detailEl.innerHTML = head(def, ev) + body(idx, ev.data || {});
+}
+
+function head(def, ev) {
+  const status = ev?.data?.status || "pending";
+  const ms = ev?.data?.duration_ms != null ? `${ev.data.duration_ms.toFixed(1)} ms` : "—";
+  return `<div class="detail-summary">
+    <div class="title">${esc(def.name)}<span class="slug">${def.idx} · ${esc(def.slug)}</span></div>
+    <div class="ms">${ms}</div>
+    <span class="badge ${status}">${STATUS_KO[status] || status}</span>
+  </div>`;
+}
+
+function body(idx, d) {
+  switch (idx) {
+    case 1: { // 입력 파싱
+      // 입력: 원본 HTTP body (raw_request) — 없으면 최소 fallback
+      const raw = d.raw_request || { model: d.model, messages: [{ role: "user", content: d.extracted_text }] };
+      return io2({
+        inLbl: "받은 HTTP body (원본)",
+        inHTML: `<pre style="margin:0;font-family:var(--mono);font-size:11.5px;line-height:1.55;">${esc(JSON.stringify(raw, null, 2))}</pre>`,
+        outLbl: "파싱·정규화 결과 (다음 단계 입력)",
+        outHTML: `<div style="display:grid;gap:6px;">
+          <div><span style="color:var(--muted);font-size:11px;">extracted_text</span><br/>${esc(d.extracted_text || "")}</div>
+        </div>`,
+      }) +
+      meta({"모델": d.model || "—", "언어": d.language || "—", "메시지 수": d.message_count ?? 0, "글자 수": d.text_length ?? 0});
+    }
+
+    case 2: { // PII 탐지
+      const ents = (d.entities || []).slice().sort((a,b) => a.start - b.start);
+      const text = d.text || "";
+      let html = "", cursor = 0;
+      for (const e of ents) {
+        if (e.start < cursor) continue;
+        html += esc(text.slice(cursor, e.start));
+        html += `<mark class="entity" title="${esc(e.entity_type)} · ${e.score.toFixed(2)}">${esc(text.slice(e.start, e.end))}</mark>`;
+        cursor = e.end;
+      }
+      html += esc(text.slice(cursor));
+      const ledger = ents.length === 0
+        ? `<div class="empty-state" style="padding:14px;">발견된 개인정보 없음</div>`
+        : `<div class="ledger">
+            <div class="ledger-head"><span>유형</span><span>위치</span><span>인식기</span><span>신뢰도</span></div>
+            ${ents.map(e => `<div class="ledger-row">
+              <span class="type">${esc(e.entity_type)}</span>
+              <span class="pos">[${e.start}–${e.end}]</span>
+              <span class="src">${esc(e.recognizer || "—")}</span>
+              <span class="score">${e.score.toFixed(2)}</span>
+            </div>`).join("")}
+          </div>`;
+      return io2({
+          inLbl: "검사 대상 텍스트",
+          inHTML: esc(text),
+          outLbl: "탐지 결과 (빨강 = PII 위치)",
+          outHTML: html || '<span style="color:var(--muted);">탐지 항목 없음</span>',
+        }) +
+        meta({"발견": ents.length, "글자 수": text.length}) +
+        ledger;
+    }
+
+    case 3: // PII 익명화
+      return io2({
+        inLbl: "원본",
+        inHTML: esc(d.original_text || ""),
+        outLbl: "익명화 결과",
+        outHTML: withTokens(d.anonymized_text),
+      }) +
+      meta({"치환된 토큰": d.token_count || 0});
+
+    case 4: { // 위협 탐지
+      const scores = d.scores || {};
+      const meter = (k, ko) => {
+        const v = scores[k] || 0;
+        return `<div class="score-row ${k.toLowerCase()}">
+          <span class="lbl">${ko}</span>
+          <span class="meter"><span style="width:${(v*100).toFixed(0)}%"></span></span>
+          <span class="num">${v.toFixed(2)}</span>
+        </div>`;
+      };
+      return io2({
+        inLbl: "검사 텍스트",
+        inHTML: esc(d.text || ""),
+        outLbl: "분류 결과",
+        outHTML: meter("BENIGN", "정상") + meter("INJECTION", "인젝션") + meter("JAILBREAK", "탈옥"),
+      }) +
+      meta({"분류기": d.classifier || "—", "라벨": d.label || "—", "신뢰도": (d.confidence || 0).toFixed(2)});
+    }
+
+    case 5: { // 정책 결정
+      const dec = d.decision === "block" ? "block" : "allow";
+      const decKo = dec === "block" ? "차단" : "통과";
+      const reasons = (d.reasons || []).length === 0
+        ? '<span style="color:var(--muted);">차단 사유 없음</span>'
+        : `<ul style="padding-left:18px;margin-top:4px;">${d.reasons.map(r => `<li style="margin-bottom:3px;">${esc(r)}</li>`).join("")}</ul>`;
+      return io2({
+        inLbl: "입력 신호",
+        inHTML: `<div style="display:grid;gap:6px;font-family:var(--sans);font-size:12px;">
+          <div><span style="color:var(--muted);">PII 발견:</span> <strong>${d.based_on?.entities_seen ?? 0}개</strong></div>
+          <div><span style="color:var(--muted);">위협:</span> <strong>${esc(d.based_on?.injection_label || "—")}</strong></div>
+        </div>`,
+        outLbl: "결정",
+        outHTML: `<div style="text-align:center;padding:14px 0;"><span class="decision-stamp ${dec}">${decKo}</span></div>`,
+      }) +
+      `<div style="font-size:11px;color:var(--muted);margin-bottom:6px;font-weight:500;">사유</div>
+       <div style="font-size:12px;color:var(--ink-soft);">${reasons}</div>`;
+    }
+
+    case 6: // LLM 호출
+      return io2({
+        inLbl: "LLM 입력 (익명화)",
+        inHTML: withTokens(d.request_text),
+        outLbl: "LLM 응답",
+        outHTML: withTokens(d.response_text),
+      }) +
+      meta({
+        "공급자": d["gen_ai.provider.name"] || "—",
+        "모델": d["gen_ai.response.model"] || d["gen_ai.request.model"] || "—",
+        "입력 토큰": d["gen_ai.usage.input_tokens"] ?? "—",
+        "출력 토큰": d["gen_ai.usage.output_tokens"] ?? "—",
+      }) +
+      (d.used_stub ? `<div style="margin-top:8px;padding:8px 12px;background:var(--warn-bg);border:1px solid #fde68a;border-radius:4px;color:var(--warn);font-size:12px;">⚠ Ollama 미연결 — 스텁 응답</div>` : "");
+
+    case 7: { // 출력 검사
+      const leaks = d.leaked_entities || [];
+      if (leaks.length === 0) {
+        return `<div class="io-2"><div class="io-pane single">
+            <div class="lbl">검사 대상 — LLM 응답</div>
+            <div class="val">${withTokens(d.scanned_text)}</div>
+          </div></div>
+          <div style="display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--success-bg);border:1px solid #86efac;border-radius:4px;color:var(--success);font-size:12px;font-weight:500;">
+            ✓ PII 누출 없음 — 안전
+          </div>`;
+      }
+      const ledger = leaks.map(e => `<div class="ledger-row">
+        <span class="type">${esc(e.entity_type)}</span>
+        <span class="pos">[${e.start}–${e.end}]</span>
+        <span class="src">${esc(e.recognizer || "—")}</span>
+        <span class="score">${e.score.toFixed(2)}</span>
+      </div>`).join("");
+      return `<div class="io-2"><div class="io-pane single">
+          <div class="lbl">마스킹된 응답 (PII 누출 차단)</div>
+          <div class="val">${esc(d.masked_text || d.scanned_text || "")}</div>
+        </div></div>
+        <div style="color:var(--danger);font-weight:500;margin-bottom:8px;font-size:12px;">⚠ ${leaks.length}개 PII 누출 — 재마스킹 적용</div>
+        <div class="ledger">
+          <div class="ledger-head"><span>유형</span><span>위치</span><span>인식기</span><span>신뢰도</span></div>
+          ${ledger}
+        </div>`;
+    }
+
+    case 8: // PII 복원
+      return io2({
+        inLbl: "토큰 응답",
+        inHTML: withTokens(d.before_text),
+        outLbl: "복원 응답",
+        outHTML: esc(d.after_text || ""),
+      }) +
+      meta({"복원된 토큰": d.tokens_replaced || 0});
+
+    case 9: // 응답 조립
+      return `<div class="io-2"><div class="io-pane single">
+          <div class="lbl">최종 응답 (클라이언트 수신)</div>
+          <div class="val" style="font-family:var(--sans);font-size:13px;">${esc(d.final_message_content || "")}</div>
+        </div></div>
+        ${meta({"전체 처리 시간": `${(d.pipeline_duration_ms || 0).toFixed(1)} ms`, "실행 단계": `${d.stages_executed ?? 0} / 9`})}`;
+
+    default:
+      return `<pre style="font-family:var(--mono);font-size:11px;background:var(--surface-soft);padding:10px;border-radius:4px;white-space:pre-wrap;">${esc(JSON.stringify(d, null, 2))}</pre>`;
+  }
+}
+
+// 헬퍼
+function io2({inLbl, inHTML, outLbl, outHTML}) {
+  return `<div class="io-2">
+    <div class="io-pane"><div class="lbl">${esc(inLbl)}</div><div class="val">${inHTML}</div></div>
+    <div class="arrow">→</div>
+    <div class="io-pane"><div class="lbl">${esc(outLbl)}</div><div class="val">${outHTML}</div></div>
+  </div>`;
+}
+function meta(obj) {
+  return `<div class="meta-grid">${Object.entries(obj).map(([k, v]) =>
+    `<div class="meta-cell"><div class="lbl">${esc(k)}</div><div class="v">${esc(String(v))}</div></div>`).join("")}</div>`;
+}
+function withTokens(s) {
+  return esc(s || "").replace(/&lt;[A-Z_]+_\d+&gt;/g, m => `<span class="token">${m}</span>`);
+}
+function esc(s) {
+  if (s == null) return "";
+  return String(s).replace(/[&<>"']/g, m => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]));
+}
+
+// ─── 라이브 피드 ──────────────────────────────────────────────────
+function pushFeed(ev, traceId) {
+  const time = ev.time ? new Date(ev.time).toLocaleTimeString("ko-KR", {hour12:false}) : "—";
+  const stage = ev.data?.stage || "—";
+  const status = ev.data?.status || "—";
+  const ms = ev.data?.duration_ms;
+  liveFeed.unshift({time, traceId: traceId.slice(0,10), stage, status, ms});
+  if (liveFeed.length > 80) liveFeed.length = 80;
+  $("feed-count").textContent = `${liveFeed.length}`;
+  feedBody.innerHTML = liveFeed.slice(0, 30).map(r => {
+    const cls = r.status === "blocked" ? "color:var(--danger);"
+              : r.status === "success" ? "color:var(--success);"
+              : r.status === "started" ? "color:var(--accent);"
+              : "color:var(--ink-soft);";
+    return `<tr>
+      <td>${esc(r.time)}</td>
+      <td>${esc(r.traceId)}</td>
+      <td class="stage-cell">${esc(r.stage)}</td>
+      <td style="${cls}">${esc(STATUS_KO[r.status] || r.status)}</td>
+      <td class="ms-cell">${r.ms != null ? r.ms.toFixed(1) : "—"}</td>
+    </tr>`;
+  }).join("");
+}
+
+// ─── 통계 폴링 ────────────────────────────────────────────────────
+async function refreshStats() {
+  try {
+    const [s, ent] = await Promise.all([
+      fetch("/api/v1/logs/stats").then(r => r.json()),
+      fetch("/api/v1/logs/entities?limit=8").then(r => r.json()),
+    ]);
+    $("kpi-total").textContent   = s.total_traces ?? 0;
+    $("kpi-success").textContent = s.by_status?.success ?? 0;
+    $("kpi-blocked").textContent = s.by_status?.blocked ?? 0;
+    const avg = s.duration_ms?.avg_ms;
+    $("kpi-avg").innerHTML = avg != null ? `${avg.toFixed(0)}<small>ms</small>` : "—<small>ms</small>";
+
+    $("rt-total").textContent   = s.total_traces ?? 0;
+    $("rt-success").textContent = s.by_status?.success ?? 0;
+    $("rt-blocked").textContent = s.by_status?.blocked ?? 0;
+    $("rt-avg").innerHTML       = avg != null ? `${avg.toFixed(0)}<small>ms</small>` : "—";
+
+    const perStage = s.per_stage || [];
+    const max = Math.max(1, ...perStage.map(r => r.avg_ms || 0));
+    $("lat-grid").innerHTML = STAGES.map(d => {
+      const row = perStage.find(r => r.stage_index === d.idx);
+      const ms = row?.avg_ms || 0;
+      return `<div class="lat-row">
+        <span class="idx">${d.idx}</span>
+        <span class="name">${d.name}</span>
+        <span class="bar"><span style="width:${(ms / max * 100).toFixed(0)}%"></span></span>
+        <span class="ms">${ms ? ms.toFixed(0) : "—"}</span>
+      </div>`;
+    }).join("");
+
+    const entRows = ent.entities || [];
+    if (entRows.length === 0) {
+      $("entity-bars").innerHTML = '<div class="empty-state">데이터 없음</div>';
+    } else {
+      const max2 = Math.max(1, ...entRows.map(r => r.n));
+      $("entity-bars").innerHTML = entRows.map(r => `
+        <div class="entity-bar">
+          <span class="lbl">${esc(r.entity_type)}</span>
+          <span class="bar"><span style="width:${(r.n / max2 * 100).toFixed(0)}%"></span></span>
+          <span class="n">${r.n}</span>
+        </div>`).join("");
+    }
+  } catch (e) {}
+}
+refreshStats();
+setInterval(refreshStats, 5000);
+
+// ─── ?trace=ID 재생 ────────────────────────────────────────────────
+async function tryLoadFromArchive() {
+  const id = new URLSearchParams(window.location.search).get("trace");
+  if (!id) return;
+  try {
+    const r = await fetch(`/api/v1/logs/traces/${id}`);
+    if (!r.ok) return;
+    const j = await r.json();
+    (j.events || []).forEach(e => ingest({
+      id: e.id, time: e.time, type: e.type || "ai.gateway.stage.completed",
+      subject: `trace/${id}`, data: e.data || {},
+    }));
+    selectCase(id);
+  } catch (e) {}
+}
+tryLoadFromArchive();
+
+// ─── SSE ───────────────────────────────────────────────────────────
+const sse = new EventSource("/api/v1/traces/stream");
+sse.onopen = () => { statusEl.classList.add("on"); statusTxt.textContent = "실시간"; };
+sse.onerror = () => { statusEl.classList.remove("on"); statusTxt.textContent = "재연결"; };
+sse.onmessage = m => { try { ingest(JSON.parse(m.data)); } catch (e) {} };
+[
+  "ai.gateway.request.received","ai.gateway.stage.completed","ai.gateway.stage.started",
+  "ai.gateway.stage.failed","ai.gateway.stage.blocked","ai.gateway.request.completed",
+].forEach(t => sse.addEventListener(t, m => { try { ingest(JSON.parse(m.data)); } catch (e) {} }));
+
+window.selectCase = selectCase;
+window.selectStage = selectStage;
+</script>
+
+</body>
+</html>

@@ -1,0 +1,27 @@
+[project]
+name = "llm-proxy"
+version = "0.1.0"
+description = "LLM proxy with PII anonymization (Presidio) + real-time observability"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.115",
+    "pydantic>=2.8",
+    "uvicorn[standard]",
+    "httpx",
+    "python-ulid",
+    "ollama",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["proxy*"]

@@ -24,3 +24,7 @@ __pycache__/
 .venv/
 .pytest_cache/
 .ipynb_checkpoints/
+
+# --- llm_proxy: 실행 시 생성되는 것 ---
+/llm_proxy/proxy_logs.db
+*.egg-info/

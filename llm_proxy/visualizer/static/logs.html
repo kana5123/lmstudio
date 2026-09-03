@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <title>PII Proxy · 로그 저장소</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+
+<header class="top">
+  <div class="brand-block">
+    <div class="logo"><span class="glyph">P</span> PII Proxy</div>
+    <nav>
+      <a href="/">실시간</a>
+      <a href="/logs" class="active">로그 저장소</a>
+    </nav>
+  </div>
+  <div class="right">
+    <span class="meter">SQLite · proxy_logs.db</span>
+  </div>
+</header>
+
+<div class="archive-shell">
+
+  <h2 class="archive-title">
+    <small>요청 아카이브</small>
+    누적 요청 기록
+  </h2>
+  <p class="archive-sub">
+    프록시가 처리한 모든 요청이 디스크의
+    <code style="font-family:var(--mono);background:var(--bg-alt);padding:1px 5px;border-radius:3px;color:var(--accent);">proxy_logs.db</code>
+    파일에 영구 저장됩니다. 카드를 클릭하면 실시간 화면으로 이동해 9단계 전체를 다시 볼 수 있습니다.
+  </p>
+
+  <div class="stat-cards" id="stats"></div>
+
+  <div class="archive-tools">
+    <span>필터</span>
+    <select id="filter-status">
+      <option value="">전체</option>
+      <option value="success">통과</option>
+      <option value="blocked">차단</option>
+      <option value="pending">진행중</option>
+    </select>
+    <button onclick="reload()">새로고침</button>
+    <span style="margin-left:auto;" id="count">—</span>
+  </div>
+
+  <div class="archive-grid" id="grid"></div>
+
+</div>
+
+<script>
+const grid     = document.getElementById("grid");
+const statsEl  = document.getElementById("stats");
+const filterEl = document.getElementById("filter-status");
+const countEl  = document.getElementById("count");
+const STATUS_KO = { success:"통과", blocked:"차단", pending:"진행중" };
+
+filterEl.addEventListener("change", reload);
+
+async function reload() {
+  const status = filterEl.value;
+  const url = `/api/v1/logs/traces?limit=200${status ? "&status=" + status : ""}`;
+  try {
+    const [traces, stats] = await Promise.all([
+      fetch(url).then(r => r.json()),
+      fetch("/api/v1/logs/stats").then(r => r.json()),
+    ]);
+    renderStats(stats);
+    renderGrid(traces.traces || []);
+  } catch (e) {
+    grid.innerHTML = `<div class="empty-state">불러오기 실패: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderStats(s) {
+  const card = (lbl, num, sub = "") => `<div class="card">
+    <div class="lbl">${lbl}</div>
+    <div class="num">${num}</div>
+    <div class="sub">${sub}</div>
+  </div>`;
+  const dur = s.duration_ms || {};
+  statsEl.innerHTML = [
+    card("총 요청", s.total_traces ?? 0, "누적"),
+    card("통과",    s.by_status?.success ?? 0, "200 OK"),
+    card("차단",    s.by_status?.blocked ?? 0, "403"),
+    card("평균 시간", dur.avg_ms != null ? dur.avg_ms.toFixed(0) : "—", dur.avg_ms != null ? "ms" : ""),
+  ].join("");
+}
+
+function renderGrid(rows) {
+  countEl.textContent = `${rows.length} 건`;
+  if (rows.length === 0) {
+    grid.innerHTML = `<div class="empty-state" style="grid-column:1 / -1;background:var(--surface);border:1px dashed var(--border);border-radius:6px;padding:60px;">저장된 요청이 없습니다.<br/><code style="font-family:var(--mono);color:var(--accent);">:8765</code> 로 요청을 보내 보세요.</div>`;
+    return;
+  }
+  grid.innerHTML = rows.map(r => {
+    const stat = r.status || "pending";
+    const dur  = r.duration_ms != null ? `${r.duration_ms.toFixed(0)} ms` : "—";
+    const tin  = r.input_tokens ?? 0;
+    const tout = r.output_tokens ?? 0;
+    return `<div class="archive-card" onclick="openCase('${esc(r.trace_id)}')">
+      <div class="row">
+        <span class="id">${esc(r.trace_id.slice(0, 16))}…</span>
+        <span class="when">${esc(formatTime(r.started_at))}</span>
+      </div>
+      <div class="meta">
+        <div><span class="lbl">단계</span><span class="v">${r.stages_executed ?? 0}<span style="font-size:13px;color:var(--muted-soft);">/9</span></span></div>
+        <div><span class="lbl">토큰</span><span class="v">${tin}/${tout}</span></div>
+        <div><span class="lbl">시간</span><span class="v">${dur}</span></div>
+      </div>
+      <div class="footer">
+        <span>${esc(r.model || "—")}</span>
+        <span class="archive-pill ${stat}">${STATUS_KO[stat] || stat}</span>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+function openCase(id) {
+  window.location.href = `/?trace=${encodeURIComponent(id)}`;
+}
+
+function formatTime(iso) {
+  if (!iso) return "—";
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString("ko-KR", {
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+    });
+  } catch (e) { return iso; }
+}
+
+function esc(s) {
+  if (s == null) return "";
+  return String(s).replace(/[&<>"']/g, m => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]));
+}
+
+reload();
+setInterval(reload, 5000);
+</script>
+</body>
+</html>

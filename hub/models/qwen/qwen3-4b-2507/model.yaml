@@ -1,0 +1,62 @@
+# model.yaml is an open standard for defining cross-platform, composable AI models
+# Learn more at https://modelyaml.org
+model: qwen/qwen3-4b-2507
+base:
+  - key: lmstudio-community/qwen3-4b-instruct-2507-gguf
+    sources:
+      - type: huggingface
+        user: lmstudio-community
+        repo: Qwen3-4B-Instruct-2507-GGUF
+  - key: lmstudio-community/qwen3-4b-instruct-2507-mlx-4bit
+    sources:
+      - type: huggingface
+        user: lmstudio-community
+        repo: Qwen3-4B-Instruct-2507-MLX-4bit
+  - key: lmstudio-community/qwen3-4b-instruct-2507-mlx-5bit
+    sources:
+      - type: huggingface
+        user: lmstudio-community
+        repo: Qwen3-4B-Instruct-2507-MLX-5bit
+  - key: lmstudio-community/qwen3-4b-instruct-2507-mlx-6bit
+    sources:
+      - type: huggingface
+        user: lmstudio-community
+        repo: Qwen3-4B-Instruct-2507-MLX-6bit
+  - key: lmstudio-community/qwen3-4b-instruct-2507-mlx-8bit
+    sources:
+      - type: huggingface
+        user: lmstudio-community
+        repo: Qwen3-4b-Instruct-2507-MLX-8bit
+metadataOverrides:
+  domain: llm
+  architectures:
+    - qwen3
+  compatibilityTypes:
+    - gguf
+    - safetensors
+  paramsStrings:
+    - 4B
+  minMemoryUsageBytes: 2300000000
+  contextLengths:
+    - 262144
+  vision: false
+  trainedForToolUse: true
+config:
+  operation:
+    fields:
+      - key: llm.prediction.temperature
+        value: 0.7
+      - key: llm.prediction.topKSampling
+        value: 20
+      - key: llm.prediction.topPSampling
+        value:
+          checked: true
+          value: 0.8
+      - key: llm.prediction.repeatPenalty
+        value:
+          checked: false
+          value: 1
+      - key: llm.prediction.minPSampling
+        value:
+          checked: true
+          value: 0

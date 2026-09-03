@@ -1,0 +1,46 @@
+{
+  "type": "model",
+  "owner": "qwen",
+  "name": "qwen3-4b-2507",
+  "dependencies": [
+    {
+      "type": "model",
+      "purpose": "baseModel",
+      "modelKeys": [
+        "lmstudio-community/qwen3-4b-instruct-2507-gguf",
+        "lmstudio-community/qwen3-4b-instruct-2507-mlx-4bit",
+        "lmstudio-community/qwen3-4b-instruct-2507-mlx-5bit",
+        "lmstudio-community/qwen3-4b-instruct-2507-mlx-6bit",
+        "lmstudio-community/qwen3-4b-instruct-2507-mlx-8bit"
+      ],
+      "sources": [
+        {
+          "type": "huggingface",
+          "user": "lmstudio-community",
+          "repo": "Qwen3-4B-Instruct-2507-GGUF"
+        },
+        {
+          "type": "huggingface",
+          "user": "lmstudio-community",
+          "repo": "Qwen3-4B-Instruct-2507-MLX-4bit"
+        },
+        {
+          "type": "huggingface",
+          "user": "lmstudio-community",
+          "repo": "Qwen3-4B-Instruct-2507-MLX-5bit"
+        },
+        {
+          "type": "huggingface",
+          "user": "lmstudio-community",
+          "repo": "Qwen3-4B-Instruct-2507-MLX-6bit"
+        },
+        {
+          "type": "huggingface",
+          "user": "lmstudio-community",
+          "repo": "Qwen3-4b-Instruct-2507-MLX-8bit"
+        }
+      ]
+    }
+  ],
+  "revision": 3
+}
